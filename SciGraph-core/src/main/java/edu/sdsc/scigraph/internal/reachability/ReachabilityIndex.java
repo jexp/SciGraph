@@ -21,10 +21,13 @@ import static java.lang.String.format;
 
 import java.util.AbstractMap;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.Map.Entry;
 import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeSet;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Logger;
 
@@ -34,6 +37,7 @@ import org.neo4j.graphdb.Node;
 import org.neo4j.graphdb.Path;
 import org.neo4j.graphdb.Transaction;
 import org.neo4j.graphdb.traversal.TraversalDescription;
+import org.neo4j.helpers.Pair;
 import org.neo4j.kernel.Traversal;
 import org.neo4j.kernel.Uniqueness;
 import org.neo4j.tooling.GlobalGraphOperations;
@@ -55,6 +59,8 @@ public class ReachabilityIndex {
   
   private int transactionBatchSize = 500000;   //default transaction size.
 
+  private int parallelLevel = 8;
+  
   /***
    * Manage a reachability index object on a graph
    * @param graphDb The graph on which to build the reachability index
@@ -235,6 +241,148 @@ public class ReachabilityIndex {
     return false;
   }
 
+
+  public Set<Pair<Node,Node>> getConnectPairs(Set<Node> sourceNodes, Set<Node> targetNodes) throws InterruptedException {
+	  return getConnectivityPairs(sourceNodes, targetNodes, false);
+  }
+  
+  public Set<Pair<Node,Node>> getDisconnectedConnectPairs(Set<Node> sourceNodes, Set<Node> targetNodes) throws InterruptedException {
+	  return getConnectivityPairs(sourceNodes, targetNodes, true);
+  }
+  
+  /*
+   * We assume that source and target sets has no intersections for now.
+   * 
+   * @param sourceNodes
+   * @param targetNodes
+   * @param negate
+   * @return
+   */
+  private Set<Pair<Node,Node>> getConnectivityPairs(Set<Node> sourceNodes, 
+		     Set<Node> targetNodes, boolean negate) throws 
+		     InterruptedException  {
+
+	  ExecutorService executor = Executors.newFixedThreadPool(parallelLevel);
+	  Set<Pair<Node,Node>> r = new HashSet<Pair<Node,Node>>();
+	  
+	  for (Node start : sourceNodes) {
+		for ( Node end : targetNodes) {
+/*		  if ( canReach(start,end) != negate) {
+		    r.add(Pair.of(start, end));
+		  } */  
+				Runnable worker = new ConnectivityTester(r, start, end,negate);
+			    executor.execute(worker);
+		}	
+	  }
+	  
+      executor.shutdown();
+	  executor.awaitTermination(Integer.MAX_VALUE,TimeUnit.HOURS );
+      
+      return r;
+  }
+
+  
+  public boolean allReachable (Node sourceNode, Set<Node> targetNodes, boolean negate) throws InterruptedException {
+  
+	  ExecutorService executor = Executors.newFixedThreadPool(parallelLevel);
+	  ReachabilityTestContext context = new ReachabilityTestContext();
+	  
+	  for ( Node end : targetNodes) {
+		 if ( context.isAllSatisfied()) { 	
+		   Runnable worker = new ForAllConnectivityTester(sourceNode, end,negate, context);
+		    executor.execute(worker);
+		 } else {
+			 break;
+		 }
+	  }
+	  
+      executor.shutdown();
+	  executor.awaitTermination(Integer.MAX_VALUE,TimeUnit.HOURS );
+
+	  return context.isAllSatisfied();
+	  
+  }
+
+
+  public boolean allReachable (Set<Node> sourceNodes, Node targetNode, boolean negate) throws InterruptedException {
+	  
+	  ExecutorService executor = Executors.newFixedThreadPool(parallelLevel);
+	  ReachabilityTestContext context = new ReachabilityTestContext();
+	  
+	  for ( Node start : sourceNodes) {
+		 if ( context.isAllSatisfied()) { 	
+		   Runnable worker = new ForAllConnectivityTester(start, targetNode,negate, context);
+		    executor.execute(worker);
+		 } else {
+			 break;
+		 }
+	  }
+	  
+      executor.shutdown();
+	  executor.awaitTermination(Integer.MAX_VALUE,TimeUnit.HOURS );
+
+	  return context.isAllSatisfied();
+	  
+  }
+
+  
+
+  class ForAllConnectivityTester implements Runnable {
+
+	    private Node startNode;
+	    private Node endNode;
+	    private boolean negate;
+	    ReachabilityTestContext context;
+
+	    public ForAllConnectivityTester (Node startNode, Node endNode, 
+	    		            boolean negate, ReachabilityTestContext context ) {
+	    	this.startNode=startNode;
+	    	this.endNode=endNode;
+	    	this.negate = negate;
+	    	this.context = context;
+	    }
+	   
+	    @Override
+	    public void run() {
+	      if ( !context.isAllSatisfied()) return;	 
+	      if(canReach(startNode,endNode) == negate) {
+	    	  synchronized (context) {
+	    		  if ( context.isAllSatisfied())
+	    		     context.setAllSatisfied(false);
+	    		  
+	    	  }
+	      }
+	    }
+
+  }
+ 
+  
+  class ConnectivityTester implements Runnable {
+
+	    private Set<Pair<Node,Node>> resultSet ;
+	    private Node startNode;
+	    private Node endNode;
+	    private boolean negate;
+
+	    public ConnectivityTester (Set<Pair<Node,Node>> resultSet,Node startNode, Node endNode, 
+	    		            boolean negate ) {
+	    	this.resultSet = resultSet;
+	    	this.startNode=startNode;
+	    	this.endNode=endNode;
+	    	this.negate = negate;
+	    }
+	   
+	    @Override
+	    public void run() {
+	      if(canReach(startNode,endNode) != negate) {
+	    	  synchronized (resultSet) {
+	    		  resultSet.add(Pair.of(startNode, endNode));
+	    	  }
+	      }
+	    }
+
+	}
+
   static class InOutListTraverser extends Thread {
 
     private final TraversalDescription traversalDescription;
@@ -252,7 +400,7 @@ public class ReachabilityIndex {
         logger.finest(p.toString()); // Avoids unused variable warning
       }
     }
-
   }
+  
 
 }

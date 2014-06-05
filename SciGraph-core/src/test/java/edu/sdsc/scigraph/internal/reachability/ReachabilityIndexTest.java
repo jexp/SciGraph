@@ -19,6 +19,9 @@ import static com.google.common.collect.Lists.newArrayList;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
 
+import java.util.HashSet;
+import java.util.Set;
+
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.neo4j.graphdb.DynamicRelationshipType;
@@ -26,6 +29,7 @@ import org.neo4j.graphdb.GraphDatabaseService;
 import org.neo4j.graphdb.Node;
 import org.neo4j.graphdb.RelationshipType;
 import org.neo4j.graphdb.Transaction;
+import org.neo4j.helpers.Pair;
 import org.neo4j.test.TestGraphDatabaseFactory;
 
 import com.google.common.base.Predicate;
@@ -35,7 +39,7 @@ public class ReachabilityIndexTest {
   static final RelationshipType type = DynamicRelationshipType.withName("foo");
 
   static ReachabilityIndex index;
-  static Node a, b, c, d, e, f;
+  static Node a, b, c, d, e, f,g;
 
   @BeforeClass
   public static void setup() throws InterruptedException {
@@ -54,6 +58,10 @@ public class ReachabilityIndexTest {
     f = graphDb.createNode();
     e.createRelationshipTo(f, type);
     a.createRelationshipTo(e, type);
+    
+    g = graphDb.createNode();
+    g.createRelationshipTo(c, type);
+    
 
     tx.success();
     tx.finish();
@@ -111,4 +119,53 @@ public class ReachabilityIndexTest {
     assertThat(index.canReach(a, e), is(false));
   }
 
+  @Test
+  public void testNodePairNodeReachability() {
+	Set<Node> src = new HashSet<Node>();
+	src.add(a);
+	src.add(d);
+	Set<Node> dest = new HashSet<Node>();
+	dest.add(b);
+	dest.add(c);
+	Set<Pair<Node,Node>> r = new HashSet<Pair<Node,Node>> ();
+	r.add (Pair.of(a,b));
+	r.add (Pair.of(a,c));
+    try {
+    	Set<Pair<Node,Node>> result = index.getConnectPairs(src,dest); 
+    	assertThat(result, is(r));
+    } catch (InterruptedException e) {
+    	assertThat(true, is(true));
+    }
+  }  
+
+  
+  @Test
+  public void testForAllConnected1() {
+	Set<Node> dest = new HashSet<Node>();
+	dest.add(b);
+	dest.add(c);
+    try {
+    	assertThat(index.allReachable(a, dest, false), is(true));
+    	dest.add(d);
+    	assertThat(index.allReachable(a, dest, false), is(false));
+    } catch (InterruptedException e) {
+    	assertThat(true, is(false));
+    }
+  }  
+
+  @Test
+  public void testForAllConnected2() {
+	Set<Node> src = new HashSet<Node>();
+	src.add(a);
+	src.add(g);
+    try {
+    	assertThat(index.allReachable(src, c, false), is(true));
+    	src.add(b);
+    	assertThat(index.allReachable(src, c, false), is(false));
+    } catch (InterruptedException e) {
+    	assertThat(true, is(false));
+    }
+  }  
+  
+  
 }
